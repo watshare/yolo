@@ -1,4 +1,4 @@
-name: Python Multi-Platform Packaging 
+name: Python Multi-Platform Packaging
 
 on:
   workflow_dispatch:
@@ -26,16 +26,13 @@ on:
           - '3.10'
           - '3.11'
           - '3.12'
+
 jobs:
   build:
-    runs-on: ${{
-      if contains(inputs.platform, 'Windows') }}windows-latest${{
-      else if contains(inputs.platform, 'Linux') }}ubuntu-latest${{
-      else if contains(inputs.platform, 'macOS') }}macos-latest${{
-      endif }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        platform: [${{ inputs.platform }},]
+        os: ${{ [contains(inputs.platform, 'Windows') && 'windows-latest', contains(inputs.platform, 'Linux') && 'ubuntu-latest', contains(inputs.platform, 'macOS') && 'macos-latest'] }}
     steps:
       - name: Checkout code 
         uses: actions/checkout@v3
@@ -49,7 +46,7 @@ jobs:
         shell: bash 
         run: |
           if [ "$(uname)" = "Linux" ]; then 
-            pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+            pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ 
             pip config set global.trusted-host mirrors.aliyun.com 
           elif [ "$(uname)" = "Darwin" ]; then 
             mkdir -p ~/Library/Application\ Support/pip 
