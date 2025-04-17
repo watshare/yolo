@@ -35,8 +35,7 @@ jobs:
       endif }}
     strategy:
       matrix:
-        platform: [${{ inputs.platform }}]
-
+        platform: [${{ inputs.platform }},]
     steps:
       - name: Checkout code 
         uses: actions/checkout@v3
