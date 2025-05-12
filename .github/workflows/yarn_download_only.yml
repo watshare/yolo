@@ -1,0 +1,77 @@
+name: Setup yarn Node.js Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: "Enter Node.js version (e.g., 18.x)"
+        required: true
+        default: "18.x"
+      npm_version:
+        description: "Enter NPM version (e.g., 9.x)"
+        required: true
+        default: "9.x"
+      pnpm_version:
+        description: "Enter PNPM version (e.g., 8.x)"
+        required: true
+        default: "8.x"
+      yarn_version:
+        description: "Enter Yarn version (e.g., 1.x or 3.x)"
+        required: true
+        default: "1.x"
+      plugins:
+        description: "Enter the plugin names to install (separate by space)"
+        required: true
+
+jobs:
+  setup-project:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # Step 1: Checkout the repo
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ github.event.inputs.node_version }}
+
+      # Step 3: Install NPM
+      - name: Install NPM
+        run: npm install -g npm@${{ github.event.inputs.npm_version }}
+
+      # Step 4: Install PNPM
+      - name: Install PNPM
+        run: npm install -g pnpm@${{ github.event.inputs.pnpm_version }}
+
+      # Step 5: Install Yarn
+      - name: Install Yarn
+        run: npm install -g yarn@${{ github.event.inputs.yarn_version }}
+
+      # Step 6: Create Project Directory & Initialize
+      - name: Create project directory and initialize
+        run: |
+          mkdir my_project
+          cd my_project
+          npm init -y
+
+      # Step 7: Install user-specified plugins
+      - name: Install plugins
+        run: |
+          cd my_project
+          yarn install ${{ github.event.inputs.plugins }}
+
+      # Step 8: Package project for download
+      - name: Package the project
+        run: |
+          cd my_project
+          zip -r ../my_project.zip .
+
+      # Step 9: Upload the artifact
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: my_project
+          path: my_project.zip
