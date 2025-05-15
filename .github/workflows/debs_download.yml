@@ -1,0 +1,114 @@
+name: debs apt download
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugins:
+        description: '以空格分隔的插件名称列表（例如：nginx mysql redis）'
+        required: true
+        default: 'nginx mysql'
+
+jobs:
+  deb-package-manager:
+    runs-on: ubuntu-22.04
+    concurrency: self-hosted  # 防止并发冲突
+    steps:
+      - name: 初始化工作环境
+        run: |
+          mkdir -p /opt/deb-workspace/{downloads,packages}
+          sudo chmod 777 /opt/deb-workspace  # 确保有足够权限
+
+      - name: 更新包索引
+        run: |
+          sudo apt-get update
+
+      - name: 清理 APT 缓存
+        run: |
+          sudo rm -rf /var/cache/apt/archives/*.deb
+          sudo apt-get clean
+
+      - name: 创建软件列表文件
+        env:
+          PLUGIN_LIST: ${{ github.event.inputs.plugins }}
+        run: |
+          echo "$PLUGIN_LIST" | tr ' ' '\n' > /opt/deb-workspace/package_list.txt
+          echo "生成的软件列表文件内容:"
+          cat /opt/deb-workspace/package_list.txt
+
+      - name: 使用改进脚本下载软件包及其依赖
+        run: |
+          # 嵌入改进的下载逻辑
+          sudo apt-get install -y apt-rdepends  # 安装apt-rdepends工具
+          
+          # 创建下载目录
+          DOWNLOAD_DIR="/opt/deb-workspace/downloads"
+          sudo mkdir -p "$DOWNLOAD_DIR"
+          sudo chmod 777 "$DOWNLOAD_DIR"
+          
+          # 切换到下载目录
+          cd "$DOWNLOAD_DIR"
+          
+          # 读取软件列表文件并下载每个软件及其依赖
+          while IFS= read -r package; do
+              # 跳过空行
+              if [ -z "$package" ]; then
+                  continue
+              fi
+              
+              echo "正在处理软件: $package"
+              
+              # 使用apt-rdepends获取递归依赖并下载
+              dependencies=$(apt-rdepends --state-follow=Installed --no-conflicts --no-breaks --no-replaces --no-enhances "$package" | grep -v "^ ")
+              
+              echo "依赖列表:"
+              echo "$dependencies"
+              
+              # 下载软件包及其依赖
+              if [ -n "$dependencies" ]; then
+                  sudo apt-get download $dependencies
+                  if [ $? -eq 0 ]; then
+                      echo "软件 '$package' 及其依赖下载成功"
+                  else
+                      echo "警告: 下载软件 '$package' 及其依赖时出错"
+                  fi
+              else
+                  echo "警告: 无法解析软件 '$package' 的依赖"
+              fi
+              
+              echo
+          done < /opt/deb-workspace/package_list.txt
+          
+          # 验证下载结果
+          deb_count=$(ls *.deb 2>/dev/null | wc -l)
+          if [ $deb_count -eq 0 ]; then
+              echo "错误: 未下载到任何.deb文件"
+              exit 1
+          else
+              echo "成功下载 $deb_count 个.deb文件"
+          fi
+
+      - name: 验证文件完整性
+        run: |
+          cd /opt/deb-workspace/downloads
+          for deb in *.deb; do
+            echo "验证 $deb ..."
+            dpkg-deb -I "$deb" > /dev/null || { echo "文件 $deb 验证失败"; exit 1; }
+          done
+
+      - name: 创建安装包集合
+        run: |
+          cd /opt/deb-workspace
+          tar -czvf packages.tar.gz downloads/*.deb
+          echo "打包完成：packages.tar.gz"
+          echo "包大小: $(du -h packages.tar.gz | cut -f1)"
+
+      - name: 清理临时文件
+        run: |
+          sudo rm -rf /opt/deb-workspace/downloads/*
+
+      - name: 下载链接生成
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages-$(date +%Y%m%d%H%M)
+          path: /opt/deb-workspace/packages.tar.gz
+          retention-days: 1  # 保留7天下载记录    
