@@ -127,8 +127,20 @@ jobs:
             npm install -g license-checker
           fi
           
+          # 获取所有依赖包的列表，过滤掉无效的包规范
+          DEPENDENCIES=$(npx -y license-checker --json --onlyDependencies --production | jq -r 'to_entries[] | select(.key != "npm-packages@1.0.0") | "\(.key)@\(.value.version)"')
+          
+          echo "要下载的依赖包:"
+          echo "$DEPENDENCIES"
+          
+          # 检查是否有有效的依赖
+          if [ -z "$DEPENDENCIES" ]; then
+            echo "错误: 没有找到有效的依赖!"
+            exit 1
+          fi
+          
           # 下载所有依赖包
-          npm pack $(npx -y license-checker --json --onlyDependencies --production | jq -r 'to_entries[] | "\(.key)@\(.value.version)"') --pack-destination ../package-tarballs
+          echo "$DEPENDENCIES" | xargs -n1 npm pack --pack-destination ../package-tarballs
           
           # 验证是否下载了包
           if [ -z "$(ls -A ../package-tarballs)" ]; then
