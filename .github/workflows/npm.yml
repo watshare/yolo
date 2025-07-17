@@ -197,13 +197,18 @@ jobs:
       - name: 打包下载的依赖文件
         if: env.package_lock_exists == 'true'
         run: |
-          cd downloads
-          tar -czvf dependencies.tar.gz *
-          cd ..
-          mv downloads/dependencies.tar.gz .
+          # 修正打包命令，确保在正确的目录下创建压缩文件
+          tar -czvf dependencies.tar.gz -C downloads .
+          echo "打包后的文件列表:"
+          ls -la
 
       - name: 上传打包文件作为 artifact
         if: env.package_lock_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dependencies
+          path: dependencies.tar.gz  # 确保与打包步骤生成的文件路径一致
+          if-no-files-found: error  # 将警告改为错误，确保问题被捕获
+          compression-level: 6
+          overwrite: false
+          include-hidden-files: false    
