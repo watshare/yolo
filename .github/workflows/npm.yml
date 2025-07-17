@@ -34,61 +34,83 @@ jobs:
       - name: 创建临时目录
         run: mkdir -p ./npm-packages && mkdir -p ./package-tarballs
       
-      - name: 初始化空项目
+      - name: 准备package.json
         working-directory: ./npm-packages
         run: |
+          # 初始化package.json
           npm init -y
-          # 显示npm配置信息，用于调试
-          npm config list
-      
-      - name: 安装主插件并保存依赖树
-        working-directory: ./npm-packages
-        run: |
-          echo "输入的包规范: ${{ github.event.inputs.package_specs }}"
           
-          # 将输入的包规范分割成数组
+          # 清空package.json中的dependencies字段
+          echo '{
+            "name": "npm-packages",
+            "version": "1.0.0",
+            "description": "",
+            "main": "index.js",
+            "scripts": {
+              "test": "echo \"Error: no test specified\" && exit 1"
+            },
+            "keywords": [],
+            "author": "",
+            "license": "ISC",
+            "dependencies": {}
+          }' > package.json
+          
+          # 将输入的包规范添加到package.json
           IFS=',' read -ra PACKAGE_SPECS <<< "${{ github.event.inputs.package_specs }}"
           
-          # 构建安装命令
-          INSTALL_CMD="npm install"
+          # 构建依赖对象
+          DEPS='{'
+          first=true
           for spec in "${PACKAGE_SPECS[@]}"; do
-            # 移除前后空格
             spec=$(echo "$spec" | xargs)
-            # 检查是否包含@符号
-            if [[ "$spec" == *@* ]]; then
-              # 包含@符号，直接使用
-              INSTALL_CMD+=" $spec"
+            if [[ -z "$spec" ]]; then
+              continue
+            fi
+            
+            # 添加逗号分隔符
+            if [ "$first" = false ]; then
+              DEPS+=", "
             else
-              # 不包含@符号，添加最新版本标识
-              INSTALL_CMD+=" $spec@latest"
+              first=false
             fi
+            
+            # 提取包名和版本
+            if [[ "$spec" == *@* ]]; then
+              package="${spec%@*}"
+              version="${spec#*@}"
+            else
+              package="$spec"
+              version="latest"
+            fi
+            
+            # 添加到依赖对象
+            DEPS+="\"$package\": \"$version\""
           done
+          DEPS+='}'
           
-          echo "执行命令: $INSTALL_CMD --package-lock-only --no-save"
+          # 更新package.json中的dependencies字段
+          jq --argjson deps "$DEPS" '.dependencies = $deps' package.json > package.tmp.json
+          mv package.tmp.json package.json
           
-          # 添加安装选项并执行，同时捕获输出
-          output=$($INSTALL_CMD --package-lock-only --no-save 2>&1)
+          echo "生成的package.json内容:"
+          cat package.json
+      
+      - name: 生成package-lock.json
+        working-directory: ./npm-packages
+        run: |
+          # 安装依赖并强制生成package-lock.json
+          npm install --ignore-scripts --no-audit --no-fund --package-lock-only
           
-          # 显示npm安装命令的输出
-          echo "$output"
-          
-          # 检查package-lock.json是否存在
+          # 验证package-lock.json是否存在
           if [ ! -f "package-lock.json" ]; then
-            echo "package-lock.json不存在，尝试强制生成"
-            
-            # 尝试使用--force选项
-            $INSTALL_CMD --package-lock-only --no-save --force
-            
-            # 再次检查
-            if [ ! -f "package-lock.json" ]; then
-              echo "错误: package-lock.json仍未生成!"
-              # 显示目录内容用于调试
-              echo "当前目录内容:"
-              ls -la
-              exit 1
-            fi
+            echo "错误: package-lock.json未生成!"
+            # 显示目录内容用于调试
+            echo "当前目录内容:"
+            ls -la
+            exit 1
           fi
           
+          echo "package-lock.json生成成功!"
           # 显示package-lock.json的内容摘要
           echo "package-lock.json内容摘要:"
           head -n 20 package-lock.json
