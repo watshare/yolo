@@ -27,7 +27,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
-          # 移除cache参数，避免自动缓存查找
       
       - name: 安装指定版本的npm
         run: npm install -g npm@${{ github.event.inputs.npm_version }}
@@ -39,11 +38,14 @@ jobs:
         working-directory: ./npm-packages
         run: |
           npm init -y
-          # 移除无效的配置项
+          # 显示npm配置信息，用于调试
+          npm config list
       
       - name: 安装主插件并保存依赖树
         working-directory: ./npm-packages
         run: |
+          echo "输入的包规范: ${{ github.event.inputs.package_specs }}"
+          
           # 将输入的包规范分割成数组
           IFS=',' read -ra PACKAGE_SPECS <<< "${{ github.event.inputs.package_specs }}"
           
@@ -62,16 +64,36 @@ jobs:
             fi
           done
           
-          # 添加安装选项并执行
-          $INSTALL_CMD --package-lock-only --no-save
+          echo "执行命令: $INSTALL_CMD --package-lock-only --no-save"
           
-          # 验证package-lock.json是否存在
+          # 添加安装选项并执行，同时捕获输出
+          output=$($INSTALL_CMD --package-lock-only --no-save 2>&1)
+          
+          # 显示npm安装命令的输出
+          echo "$output"
+          
+          # 检查package-lock.json是否存在
           if [ ! -f "package-lock.json" ]; then
-            echo "错误: package-lock.json未生成!"
-            exit 1
+            echo "package-lock.json不存在，尝试强制生成"
+            
+            # 尝试使用--force选项
+            $INSTALL_CMD --package-lock-only --no-save --force
+            
+            # 再次检查
+            if [ ! -f "package-lock.json" ]; then
+              echo "错误: package-lock.json仍未生成!"
+              # 显示目录内容用于调试
+              echo "当前目录内容:"
+              ls -la
+              exit 1
+            fi
           fi
           
-          cat package-lock.json
+          # 显示package-lock.json的内容摘要
+          echo "package-lock.json内容摘要:"
+          head -n 20 package-lock.json
+          echo "..."
+          tail -n 20 package-lock.json
       
       - name: 下载所有依赖的原始包
         working-directory: ./npm-packages
