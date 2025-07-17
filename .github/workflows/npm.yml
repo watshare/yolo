@@ -1,77 +1,85 @@
-name: Setup npm Node.js Project
+name: NPM Dependency Downloader
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: "Enter Node.js version (e.g., 18.x)"
+        description: 'Node.js版本'
         required: true
-        default: "18.x"
+        default: '18.x'
       npm_version:
-        description: "Enter NPM version (e.g., 9.x)"
+        description: 'npm版本'
         required: true
-        default: "9.x"
-      pnpm_version:
-        description: "Enter PNPM version (e.g., 8.x)"
+        default: '9.x'
+      package_names:
+        description: '要下载的插件名，多个插件使用逗号分隔（例如：react,express,lodash）'
         required: true
-        default: "8.x"
-      yarn_version:
-        description: "Enter Yarn version (e.g., 1.x or 3.x)"
-        required: true
-        default: "1.x"
-      plugins:
-        description: "Enter the plugin names to install (separate by space)"
-        required: true
+      package_versions:
+        description: '插件版本（留空则使用最新版本），可以为每个插件指定版本，使用逗号分隔，与插件名顺序对应（例如：18.2.0,4.18.2,4.17.21）'
+        required: false
 
 jobs:
-  setup-project:
-    runs-on: ubuntu-22.04
-
+  download-dependencies:
+    runs-on: ubuntu-latest
+    
     steps:
-      # Step 1: Checkout the repo
-      - name: Checkout code
+      - name: 检出仓库
         uses: actions/checkout@v4
-
-      # Step 2: Set up Node.js environment
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      
+      - name: 设置Node.js环境
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
-
-      # Step 3: Install NPM
-      - name: Install NPM
+          cache: 'npm'
+      
+      - name: 安装指定版本的npm
         run: npm install -g npm@${{ github.event.inputs.npm_version }}
-
-      # Step 4: Install PNPM
-      - name: Install PNPM
-        run: npm install -g pnpm@${{ github.event.inputs.pnpm_version }}
-
-      # Step 5: Install Yarn
-      - name: Install Yarn
-        run: npm install -g yarn@${{ github.event.inputs.yarn_version }}
-
-      # Step 6: Create Project Directory & Initialize
-      - name: Create project directory and initialize
+      
+      - name: 创建临时目录
+        run: mkdir -p ./npm-packages && mkdir -p ./package-tarballs
+      
+      - name: 初始化空项目
+        working-directory: ./npm-packages
         run: |
-          mkdir my_project
-          cd my_project
           npm init -y
-
-      # Step 7: Install user-specified plugins
-      - name: Install plugins
+          npm config set fetch-repo-manifest true
+      
+      - name: 安装主插件并保存依赖树
+        working-directory: ./npm-packages
         run: |
-          cd my_project
-          npm install ${{ github.event.inputs.plugins }}
-
-      # Step 8: Package project for download
-      - name: Package the project
+          # 将输入的包名和版本分割成数组
+          IFS=',' read -ra PACKAGES <<< "${{ github.event.inputs.package_names }}"
+          IFS=',' read -ra VERSIONS <<< "${{ github.event.inputs.package_versions }}"
+          
+          # 构建安装命令
+          INSTALL_CMD="npm install"
+          for i in "${!PACKAGES[@]}"; do
+            package="${PACKAGES[$i]}"
+            # 检查是否有对应的版本指定
+            if [ $i -lt ${#VERSIONS[@]} ] && [ -n "${VERSIONS[$i]}" ]; then
+              INSTALL_CMD+=" ${package}@${VERSIONS[$i]}"
+            else
+              INSTALL_CMD+=" ${package}"
+            fi
+          done
+          
+          # 添加安装选项并执行
+          $INSTALL_CMD --package-lock-only --no-save
+          cat package-lock.json
+      
+      - name: 下载所有依赖的原始包
+        working-directory: ./npm-packages
         run: |
-          cd my_project
-          zip -r ../my_project.zip .
-
-      # Step 9: Upload the artifact
-      - name: Upload artifact
+          npm pack $(npx -y license-checker --json --onlyDependencies --production | jq -r 'to_entries[] | "\(.key)@\(.value.version)"') --pack-destination ../package-tarballs
+      
+      - name: 创建打包文件
+        run: |
+          tar -czvf npm-packages.tar.gz ./package-tarballs
+          echo "ARCHIVE_FILE=npm-packages.tar.gz" >> $GITHUB_ENV
+      
+      - name: 上传打包文件作为工件
         uses: actions/upload-artifact@v4
         with:
-          name: my_project
-          path: my_project.zip
+          name: npm-packages
+          path: ${{ env.ARCHIVE_FILE }}
+          retention-days: 7    
