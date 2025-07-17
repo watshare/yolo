@@ -24,24 +24,28 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 设置 Node.js
+      - name: 设置 Node.js（无缓存）
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
-          cache: 'npm'
+          # 移除 cache 参数，禁用缓存功能
 
       - name: 安装指定版本的 npm
         run: |
           npm install -g npm@${{ github.event.inputs.npm_version }}
           echo "安装的 npm 版本: $(npm --version)"
 
+      - name: 清除所有 npm 缓存
+        run: |
+          npm cache clean --force
+          rm -rf ~/.npm
+
       - name: 显示完整环境信息
         run: |
           echo "当前工作目录: $(pwd)"
-          echo "环境变量:"
-          env | sort
           echo "Node 版本: $(node -v)"
           echo "npm 版本: $(npm -v)"
+          echo "npm 缓存目录: $(npm config get cache)"
           echo "npm 配置:"
           npm config list
           echo "目录内容:"
@@ -55,22 +59,6 @@ jobs:
           # 初始化项目
           npm init -y
           
-          # 创建或重置 package.json
-          cat > package.json << EOF
-          {
-            "name": "my-project",
-            "version": "1.0.0",
-            "description": "",
-            "main": "index.js",
-            "scripts": {
-              "test": "echo \"Error: no test specified\" && exit 1"
-            },
-            "keywords": [],
-            "author": "",
-            "license": "ISC"
-          }
-          EOF
-          
           # 添加插件到 package.json
           IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
           for plugin in "${PLUGINS[@]}"; do
@@ -81,33 +69,22 @@ jobs:
           # 显示 package.json 内容
           echo "package.json 内容:"
           cat package.json
-          
-          # 保存 package.json 内容到 artifact
-          mkdir -p artifacts
-          cp package.json artifacts/
 
       - name: 强制生成 package-lock.json
         run: |
           cd my-project
           
-          # 清除缓存
-          npm cache clean --force
-          
           # 配置 npm 强制生成 package-lock.json
           npm config set package-lock true
           npm config set lockfile-version 2
           
-          # 生成 package-lock.json（不安装依赖）
+          # 生成 package-lock.json
           echo "生成 package-lock.json..."
           npm install --package-lock-only --verbose
           
           # 显示生成的 package-lock.json 头部内容
           echo "package-lock.json 内容:"
           cat package-lock.json | head -n 50
-          
-          # 保存 package-lock.json 内容到 artifact
-          mkdir -p ../artifacts
-          cp package-lock.json ../artifacts/
 
       - name: 检查 package-lock.json 文件
         id: check_file
@@ -117,7 +94,7 @@ jobs:
             echo "找到 package-lock.json 文件"
             
             # 验证 package-lock.json 是否包含依赖项
-            DEPENDENCY_COUNT=$(jq -r '.dependencies | length' my-project/package-lock.json)
+            DEPENDENCY_COUNT=$(jq -r '.dependencies | length' my-project/package-lock.json || echo 0)
             echo "package-lock.json 中的依赖数量: $DEPENDENCY_COUNT"
             
             if [ "$DEPENDENCY_COUNT" -eq 0 ]; then
@@ -134,17 +111,13 @@ jobs:
             exit 1
           fi
 
-      - name: 安装依赖（使用生成的 lock 文件）
+      - name: 安装依赖
         run: |
           cd my-project
           
           # 使用生成的 package-lock.json 安装依赖
           echo "使用 package-lock.json 安装依赖..."
           npm ci --verbose
-          
-          # 保存 npm 安装日志
-          mkdir -p ../artifacts
-          cp ~/.npm/_logs/*-debug.log ../artifacts/
 
       - name: 读取 package-lock.json 并下载依赖
         if: env.package_lock_exists == 'true'
@@ -234,11 +207,3 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dependencies
-          path: dependencies.tar.gz
-
-      - name: 上传调试信息
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-artifacts
-          path: artifacts/    
