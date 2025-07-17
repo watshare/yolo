@@ -30,18 +30,43 @@ jobs:
           node-version: ${{ github.event.inputs.node_version }}
           cache: 'npm'
       
+      - name: Show environment details
+        run: |
+          echo "Environment details"
+          node --version
+          npm --version
+          yarn --version
+          npm config get cache
+      
+      - name: Clean npm cache
+        run: npm cache clean --force
+      
       - name: Install specified npm version
         run: |
           npm install -g npm@${{ github.event.inputs.npm_version }}
+          echo "Installed npm version:"
           npm --version
       
       - name: Create package.json
         run: |
-          npm init -y
+          npm init -y --force
+          cat package.json
       
-      - name: Install specified packages
+      - name: Install specified packages with lock file
         run: |
-          npm install ${{ github.event.inputs.packages }} --package-lock-only
+          echo "Installing packages: ${{ github.event.inputs.packages }}"
+          npm install ${{ github.event.inputs.packages }} --package-lock-only --force
+          echo "Generated package-lock.json content:"
+          cat package-lock.json
+      
+      - name: Verify package-lock.json exists
+        run: |
+          if [ ! -f "package-lock.json" ]; then
+            echo "package-lock.json not found!"
+            exit 1
+          else
+            echo "package-lock.json found successfully."
+          fi
       
       - name: Upload package-lock.json
         uses: actions/upload-artifact@v4
@@ -129,4 +154,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: node_modules_packages
-          path: node_modules_packages.tar.gz    
+          path: node_modules_packages.tar.gz
+    
