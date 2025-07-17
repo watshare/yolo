@@ -30,7 +30,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
-          cache: 'npm'
+          # 禁用自动缓存，因为我们在子目录中工作
+          cache: 'false'
       
       - name: 安装指定版本的npm
         run: npm install -g npm@${{ github.event.inputs.npm_version }}
@@ -65,12 +66,33 @@ jobs:
           
           # 添加安装选项并执行
           $INSTALL_CMD --package-lock-only --no-save
+          
+          # 验证package-lock.json是否存在
+          if [ ! -f "package-lock.json" ]; then
+            echo "错误: package-lock.json未生成!"
+            exit 1
+          fi
+          
           cat package-lock.json
       
       - name: 下载所有依赖的原始包
         working-directory: ./npm-packages
         run: |
+          # 检查license-checker是否安装
+          if ! command -v license-checker &> /dev/null
+          then
+            echo "安装license-checker工具..."
+            npm install -g license-checker
+          fi
+          
+          # 下载所有依赖包
           npm pack $(npx -y license-checker --json --onlyDependencies --production | jq -r 'to_entries[] | "\(.key)@\(.value.version)"') --pack-destination ../package-tarballs
+          
+          # 验证是否下载了包
+          if [ -z "$(ls -A ../package-tarballs)" ]; then
+            echo "错误: 没有下载任何包!"
+            exit 1
+          fi
       
       - name: 创建打包文件
         run: |
