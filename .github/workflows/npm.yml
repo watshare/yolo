@@ -39,7 +39,7 @@ jobs:
         working-directory: ./npm-packages
         run: |
           npm init -y
-          npm config set fetch-repo-manifest true
+          # 移除无效的配置项
       
       - name: 安装主插件并保存依赖树
         working-directory: ./npm-packages
