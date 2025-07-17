@@ -1,108 +1,132 @@
-name: Node Plugin Downloader
+name: Download Node.js Dependencies
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: "Node.js version (e.g., 18.x)"
+        description: 'Node.js 版本'
         required: true
-        default: "18.x"
+        default: '18.x'
       npm_version:
-        description: "NPM version (e.g., 9.x)"
+        description: 'npm 版本'
         required: true
-        default: "9.x"
-      plugins:
-        description: "Comma-separated list of plugin names (e.g., express,webpack)"
+        default: '9.x'
+      packages:
+        description: '要安装的 npm 包（多个包用逗号分隔）'
         required: true
+        default: 'express,lodash'
 
 jobs:
-  download-plugins:
+  download-dependencies:
     runs-on: ubuntu-latest
+    
     steps:
-      # 设置 Node.js 环境
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ inputs.node_version }}
-          registry-url: https://registry.npmjs.org/
-
-      # 安装 NPM
-      - name: Install NPM
-        run: npm install -g npm@${{ inputs.npm_version }}
-
-      # 创建 package.json
+          node-version: ${{ github.event.inputs.node_version }}
+          cache: 'npm'
+      
+      - name: Install specified npm version
+        run: |
+          npm install -g npm@${{ github.event.inputs.npm_version }}
+          npm --version
+      
       - name: Create package.json
         run: |
-          echo '{ "name": "temp-project", "version": "1.0.0", "dependencies": {$(echo "${{ inputs.plugins }}" | sed -e 's/$[^,]*$/"\1": "*", /g' | sed -e 's/,$//') } }' > package.json
-
-      # 安装依赖并生成 package-lock.json
-      - name: Install dependencies
-        run: npm install --force
-
-      # 设置 Python 环境
+          npm init -y
+      
+      - name: Install specified packages
+        run: |
+          npm install ${{ github.event.inputs.packages }} --package-lock-only
+      
+      - name: Upload package-lock.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-lock
+          path: package-lock.json
+      
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
-
-      # 安装 Python 依赖
-      - name: Install Python dependencies
+          python-version: '3.11'
+      
+      - name: Download dependencies using Python
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
-
-      # 将 Python 脚本写入文件并运行（避免 heredoc 语法问题）
-      - name: Download packages
+          mkdir -p downloaded_packages
+          python - <<EOF
+          import json
+          import os
+          import requests
+          from urllib.parse import urlparse
+          
+          # 读取 package-lock.json
+          with open('package-lock.json', 'r') as f:
+              lock_data = json.load(f)
+          
+          # 创建下载目录
+          os.makedirs('downloaded_packages', exist_ok=True)
+          
+          # 下载所有依赖包
+          downloaded_files = []
+          
+          # 处理顶级依赖
+          for package_name, info in lock_data.get('packages', {}).items():
+              if not package_name:  # 跳过根包
+                  continue
+              
+              if 'resolved' in info:
+                  url = info['resolved']
+                  filename = os.path.basename(urlparse(url).path)
+                  
+                  try:
+                      print(f"Downloading {url}")
+                      response = requests.get(url, stream=True)
+                      response.raise_for_status()
+                      
+                      file_path = os.path.join('downloaded_packages', filename)
+                      with open(file_path, 'wb') as f:
+                          for chunk in response.iter_content(chunk_size=8192):
+                              f.write(chunk)
+                      
+                      downloaded_files.append(file_path)
+                      print(f"Downloaded {filename}")
+                  except Exception as e:
+                      print(f"Error downloading {url}: {e}")
+          
+          # 处理依赖树中的依赖
+          for package_name, info in lock_data.get('dependencies', {}).items():
+              if 'resolved' in info:
+                  url = info['resolved']
+                  filename = os.path.basename(urlparse(url).path)
+                  
+                  try:
+                      print(f"Downloading {url}")
+                      response = requests.get(url, stream=True)
+                      response.raise_for_status()
+                      
+                      file_path = os.path.join('downloaded_packages', filename)
+                      with open(file_path, 'wb') as f:
+                          for chunk in response.iter_content(chunk_size=8192):
+                              f.write(chunk)
+                      
+                      downloaded_files.append(file_path)
+                      print(f"Downloaded {filename}")
+                  except Exception as e:
+                      print(f"Error downloading {url}: {e}")
+          
+          print(f"Downloaded {len(downloaded_files)} packages")
+          EOF
+      
+      - name: Compress downloaded packages
         run: |
-          cat <<'EOF' > download_packages.py
-import json
-import os
-import requests
-import zipfile
-
-# 解析 package-lock.json
-with open('package-lock.json', 'r') as f:
-    data = json.load(f)
-
-# 提取所有依赖的 URL
-urls = set()
-
-def extract_urls(node):
-    if 'resolved' in node:
-        urls.add(node['resolved'])
-    for child in node.get('dependencies', {}):
-        extract_urls(node['dependencies'][child])
-
-extract_urls(data)
-
-# 创建下载目录
-os.makedirs('downloaded_packages', exist_ok=True)
-
-# 下载所有包
-for url in urls:
-    try:
-        filename = os.path.join('downloaded_packages', os.path.basename(url))
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        with open(filename, 'wb') as f:
-            f.write(response.content)
-    except Exception as e:
-        print(f"Failed to download {url}: {str(e)}")
-
-# 打包成 zip
-with zipfile.ZipFile('plugins.zip', 'w') as zipf:
-    for root, _, files in os.walk('downloaded_packages'):
-        for file in files:
-            zipf.write(os.path.join(root, file), file)
-
-print("Downloaded and packed all packages.")
-EOF
-
-          python download_packages.py
-
-      # 上传打包文件
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+          tar -czvf node_modules_packages.tar.gz downloaded_packages
+      
+      - name: Upload compressed packages
+        uses: actions/upload-artifact@v4
         with:
-          name: plugin-packages
-          path: plugins.zip
+          name: node_modules_packages
+          path: node_modules_packages.tar.gz    
