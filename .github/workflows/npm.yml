@@ -1,114 +1,244 @@
-name: Node.js Package Downloader and Bundler
+name: Node.js Dependency Downloader
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: 'Node.js version (e.g., 18.x)'
+        description: 'Node.js 版本'
         required: true
         default: '18.x'
       npm_version:
-        description: 'NPM version (e.g., 9.0.0)'
+        description: 'npm 版本'
         required: true
-        default: '9.0.0'
+        default: '9.x'
       plugins:
-        description: 'Comma separated list of plugin names (e.g., express,lodash)'
+        description: '要安装的插件列表（用逗号分隔）'
         required: true
-        default: 'express'
+        default: 'express,react,react-dom'
 
 jobs:
-  setup-and-download:
+  download-dependencies:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 设置 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
+          cache: 'npm'
 
-      - name: Upgrade NPM
+      - name: 安装指定版本的 npm
         run: |
           npm install -g npm@${{ github.event.inputs.npm_version }}
-      
-      - name: Create New Project Directory
-        run: |
-          mkdir node-project
-          cd node-project
-          npm init -y
+          echo "安装的 npm 版本: $(npm --version)"
 
-      - name: Install Plugins
+      - name: 显示完整环境信息
         run: |
-          cd node-project
-          npm install ${{ github.event.inputs.plugins }}
-      
-      - name: Check if package-lock.json exists
-        id: check_lock
+          echo "当前工作目录: $(pwd)"
+          echo "环境变量:"
+          env | sort
+          echo "Node 版本: $(node -v)"
+          echo "npm 版本: $(npm -v)"
+          echo "npm 配置:"
+          npm config list
+          echo "目录内容:"
+          ls -la
+
+      - name: 创建并初始化项目
         run: |
-          if [ -f node-project/package-lock.json ]; then
-            echo "lock_file_exists=true" >> $GITHUB_OUTPUT
+          mkdir -p my-project
+          cd my-project
+          
+          # 初始化项目
+          npm init -y
+          
+          # 创建或重置 package.json
+          cat > package.json << EOF
+          {
+            "name": "my-project",
+            "version": "1.0.0",
+            "description": "",
+            "main": "index.js",
+            "scripts": {
+              "test": "echo \"Error: no test specified\" && exit 1"
+            },
+            "keywords": [],
+            "author": "",
+            "license": "ISC"
+          }
+          EOF
+          
+          # 添加插件到 package.json
+          IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
+          for plugin in "${PLUGINS[@]}"; do
+            echo "添加插件 $plugin 到 package.json"
+            npm pkg set devDependencies.$plugin="*"
+          done
+          
+          # 显示 package.json 内容
+          echo "package.json 内容:"
+          cat package.json
+          
+          # 保存 package.json 内容到 artifact
+          mkdir -p artifacts
+          cp package.json artifacts/
+
+      - name: 强制生成 package-lock.json
+        run: |
+          cd my-project
+          
+          # 清除缓存
+          npm cache clean --force
+          
+          # 配置 npm 强制生成 package-lock.json
+          npm config set package-lock true
+          npm config set lockfile-version 2
+          
+          # 生成 package-lock.json（不安装依赖）
+          echo "生成 package-lock.json..."
+          npm install --package-lock-only --verbose
+          
+          # 显示生成的 package-lock.json 头部内容
+          echo "package-lock.json 内容:"
+          cat package-lock.json | head -n 50
+          
+          # 保存 package-lock.json 内容到 artifact
+          mkdir -p ../artifacts
+          cp package-lock.json ../artifacts/
+
+      - name: 检查 package-lock.json 文件
+        id: check_file
+        run: |
+          if [ -f "my-project/package-lock.json" ]; then
+            echo "package_lock_exists=true" >> $GITHUB_ENV
+            echo "找到 package-lock.json 文件"
+            
+            # 验证 package-lock.json 是否包含依赖项
+            DEPENDENCY_COUNT=$(jq -r '.dependencies | length' my-project/package-lock.json)
+            echo "package-lock.json 中的依赖数量: $DEPENDENCY_COUNT"
+            
+            if [ "$DEPENDENCY_COUNT" -eq 0 ]; then
+              echo "错误: package-lock.json 不包含任何依赖项"
+              exit 1
+            fi
           else
-            echo "lock_file_exists=false" >> $GITHUB_OUTPUT
+            echo "package_lock_exists=false" >> $GITHUB_ENV
+            echo "未找到 package-lock.json 文件"
+            echo "项目目录内容:"
+            ls -la my-project
+            echo "npm 配置:"
+            npm config list
+            exit 1
           fi
 
-      - name: Read package-lock.json and Extract Download URLs
-        if: steps.check_lock.outputs.lock_file_exists == 'true'
+      - name: 安装依赖（使用生成的 lock 文件）
         run: |
-          python3 <<EOF
-import json
-import os
+          cd my-project
+          
+          # 使用生成的 package-lock.json 安装依赖
+          echo "使用 package-lock.json 安装依赖..."
+          npm ci --verbose
+          
+          # 保存 npm 安装日志
+          mkdir -p ../artifacts
+          cp ~/.npm/_logs/*-debug.log ../artifacts/
 
-lock_path = "node-project/package-lock.json"
-urls_set = set()
-
-with open(lock_path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-def extract_urls(obj):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k == "resolved" and isinstance(v, str) and v.startswith("http"):
-                urls_set.add(v)
-            else:
-                extract_urls(v)
-    elif isinstance(obj, list):
-        for i in obj:
-            extract_urls(i)
-
-extract_urls(data)
-
-with open("download_urls.txt", "w") as f:
-    for url in urls_set:
-        f.write(url + "\n")
-
-print(f"Extracted {len(urls_set)} URLs to download_urls.txt")
-EOF
-
-      - name: Download All Packages
-        if: steps.check_lock.outputs.lock_file_exists == 'true'
+      - name: 读取 package-lock.json 并下载依赖
+        if: env.package_lock_exists == 'true'
         run: |
-          mkdir -p downloaded_packages
-          while read url; do
-            fname=$(basename "$url")
-            wget -q "$url" -O "downloaded_packages/$fname"
-          done < download_urls.txt
+          # 安装 Python 依赖
+          pip install requests
 
-      - name: Compress Downloaded Packages
-        if: steps.check_lock.outputs.lock_file_exists == 'true'
+          # 创建下载目录
+          mkdir -p downloads
+
+          # 使用 Python 脚本解析 package-lock.json 并下载依赖
+          python << EOF
+          import json
+          import os
+          import requests
+          from urllib.parse import urlparse
+
+          # 读取 package-lock.json
+          with open('my-project/package-lock.json', 'r') as f:
+              lock_data = json.load(f)
+
+          # 存储所有下载链接
+          download_links = []
+
+          # 提取 dependencies 中的下载链接
+          if 'dependencies' in lock_data:
+              for dep_name, dep_info in lock_data['dependencies'].items():
+                  if 'resolved' in dep_info:
+                      resolved_url = dep_info['resolved']
+                      # 检查是否为 HTTP/HTTPS 链接
+                      if resolved_url.startswith('http'):
+                          download_links.append(resolved_url)
+
+          # 提取 packages 中的下载链接 (npm v5+)
+          if 'packages' in lock_data:
+              for package_path, package_info in lock_data['packages'].items():
+                  if 'resolved' in package_info:
+                      resolved_url = package_info['resolved']
+                      # 检查是否为 HTTP/HTTPS 链接
+                      if resolved_url.startswith('http'):
+                          download_links.append(resolved_url)
+
+          # 打印下载链接数量
+          print(f"找到 {len(download_links)} 个下载链接")
+          if not download_links:
+              print("警告: 未找到任何下载链接")
+
+          # 下载所有链接的包
+          for url in download_links:
+              try:
+                  # 解析 URL 获取文件名
+                  parsed_url = urlparse(url)
+                  filename = os.path.basename(parsed_url.path)
+                  if not filename:
+                      filename = f"package_{hash(url)}.tar.gz"
+                  
+                  # 下载文件
+                  print(f"下载: {url}")
+                  response = requests.get(url, stream=True)
+                  response.raise_for_status()
+                  
+                  # 保存文件
+                  with open(f"downloads/{filename}", 'wb') as f:
+                      for chunk in response.iter_content(chunk_size=8192):
+                          f.write(chunk)
+                  
+                  print(f"已下载: {filename}")
+              except Exception as e:
+                  print(f"下载失败: {url}, 错误: {str(e)}")
+
+          # 创建下载链接列表文件
+          with open('downloads/links.txt', 'w') as f:
+              for url in download_links:
+                  f.write(url + '\n')
+          EOF
+
+      - name: 打包下载的依赖文件
+        if: env.package_lock_exists == 'true'
         run: |
-          zip -r node_packages.zip downloaded_packages
+          cd downloads
+          tar -czvf dependencies.tar.gz *
+          cd ..
+          mv downloads/dependencies.tar.gz .
 
-      - name: Upload Package Zip as Artifact
-        if: steps.check_lock.outputs.lock_file_exists == 'true'
+      - name: 上传打包文件作为 artifact
+        if: env.package_lock_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: node_packages
-          path: node_packages.zip
+          name: dependencies
+          path: dependencies.tar.gz
 
-      - name: Output Result
-        run: |
-          if [ "${{ steps.check_lock.outputs.lock_file_exists }}" == "true" ]; then
-            echo "package-lock.json found, all dependencies downloaded and bundled."
-          else
-            echo "package-lock.json not found, nothing to bundle."
+      - name: 上传调试信息
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts
+          path: artifacts/    
