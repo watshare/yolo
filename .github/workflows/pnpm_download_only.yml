@@ -1,4 +1,4 @@
-name: Node.js Dependency Downloader with PNPM
+name: Node.js Dependency Downloader
 
 on:
   workflow_dispatch:
@@ -7,16 +7,14 @@ on:
         description: 'Node.js 版本'
         required: true
         default: '18.x'
-      pnpm_version:
-        description: 'pnpm 版本'
+      npm_version:
+        description: 'npm 版本'
         required: true
-        default: '8.x'
-      pnpm_lock_content:
-        description: '完整的 pnpm-lock.yaml 内容'
+        default: '9.x'
+      plugins:
+        description: '要安装的插件列表（用逗号分隔）'
         required: true
-        default: |
-          # 在此粘贴完整的 pnpm-lock.yaml 内容
-          # ...
+        default: 'express,react,react-dom'
 
 jobs:
   download-dependencies:
@@ -26,102 +24,157 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 设置 Node.js
+      - name: 设置 Node.js（无缓存）
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
+          # 移除 cache 参数，禁用缓存功能
 
-      - name: 安装指定版本的 pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: ${{ github.event.inputs.pnpm_version }}
-
-      - name: 创建项目目录
-        run: mkdir -p my-project
-
-      - name: 写入 pnpm-lock.yaml
-        working-directory: ./my-project
+      - name: 安装指定版本的 npm
         run: |
-          echo '${{ github.event.inputs.pnpm_lock_content }}' > pnpm-lock.yaml
-          echo "成功写入 pnpm-lock.yaml"
-          cat pnpm-lock.yaml | head -n 20  # 显示前20行用于调试
+          npm install -g npm@${{ github.event.inputs.npm_version }}
+          echo "安装的 npm 版本: $(npm --version)"
 
-      - name: 创建 package.json（基于 lock 文件）
-        working-directory: ./my-project
+      - name: 清除所有 npm 缓存
         run: |
-          # 从 pnpm-lock.yaml 提取依赖列表
-          DEPS=$(pnpm ls --depth=-1 --json | jq -r '.packages | keys[] | select(. != "") | split("@")[0]' | tr '\n' ',')
+          npm cache clean --force
+          rm -rf ~/.npm
+
+      - name: 显示完整环境信息
+        run: |
+          echo "当前工作目录: $(pwd)"
+          echo "Node 版本: $(node -v)"
+          echo "npm 版本: $(npm -v)"
+          echo "npm 缓存目录: $(npm config get cache)"
+          echo "npm 配置:"
+          npm config list
+          echo "目录内容:"
+          ls -la
+
+      - name: 创建并初始化项目
+        run: |
+          mkdir -p my-project
+          cd my-project
           
-          # 创建基础 package.json
-          cat > package.json << EOF
-          {
-            "name": "my-project",
-            "version": "1.0.0",
-            "description": "",
-            "main": "index.js",
-            "scripts": {
-              "test": "echo \"Error: no test specified\" && exit 1"
-            },
-            "keywords": [],
-            "author": "",
-            "license": "ISC"
-          }
-          EOF
+          # 初始化项目
+          npm init -y
           
-          # 显示生成的 package.json
-          echo "生成的 package.json 内容:"
+          # 添加插件到 package.json
+          IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
+          for plugin in "${PLUGINS[@]}"; do
+            # 分割插件名称和版本
+            if [[ $plugin == *@* ]]; then
+              # 如果插件名称中包含@符号（可能是作用域或版本号）
+              # 检查是否是带版本号的格式，如 plugin@1.2.3 或 @scope/plugin@1.2.3
+              if [[ $plugin == @*@* ]]; then
+                # 处理带作用域和版本号的情况，如 @scope/plugin@1.2.3
+                scope_plugin="${plugin%@*}"  # 获取 @scope/plugin 部分
+                version="${plugin##*@}"     # 获取版本号部分
+              else
+                # 处理不带作用域但带版本号的情况，如 plugin@1.2.3
+                parts=(${plugin//@/ })     # 按@分割
+                name="${parts[0]}"
+                version="${parts[1]}"
+                scope_plugin="$name"
+              fi
+            else
+              # 不带版本号的情况
+              scope_plugin="$plugin"
+              version="*"
+            fi
+            
+            echo "添加插件 $scope_plugin 版本 $version 到 package.json"
+            npm pkg set devDependencies.$scope_plugin="$version"
+          done
+          
+          # 显示 package.json 内容
+          echo "package.json 内容:"
           cat package.json
 
-      - name: 使用 pnpm 安装依赖
-        working-directory: ./my-project
+      - name: 强制生成 package-lock.json
         run: |
-          pnpm install --frozen-lockfile --offline
-          echo "依赖安装完成"
-          ls -la node_modules
+          cd my-project
+          
+          # 配置 npm 强制生成 package-lock.json
+          npm config set package-lock true
+          npm config set lockfile-version 2
+          
+          # 生成 package-lock.json
+          echo "生成 package-lock.json..."
+          npm install --package-lock-only --verbose
+          
+          # 显示生成的 package-lock.json 头部内容
+          echo "package-lock.json 内容:"
+          cat package-lock.json | head -n 50
 
-      - name: 检查 pnpm-lock.yaml 文件
+      - name: 检查 package-lock.json 文件
         id: check_file
-        working-directory: ./my-project
         run: |
-          if [ -f "pnpm-lock.yaml" ]; then
-            echo "lock_file_exists=true" >> $GITHUB_ENV
-            echo "找到 pnpm-lock.yaml 文件"
+          if [ -f "my-project/package-lock.json" ]; then
+            echo "package_lock_exists=true" >> $GITHUB_ENV
+            echo "找到 package-lock.json 文件"
+            
+            # 验证 package-lock.json 是否包含依赖项
+            DEPENDENCY_COUNT=$(jq -r '.dependencies | length' my-project/package-lock.json || echo 0)
+            echo "package-lock.json 中的依赖数量: $DEPENDENCY_COUNT"
+            
+            if [ "$DEPENDENCY_COUNT" -eq 0 ]; then
+              echo "错误: package-lock.json 不包含任何依赖项"
+              exit 1
+            fi
           else
-            echo "lock_file_exists=false" >> $GITHUB_ENV
-            echo "未找到 pnpm-lock.yaml 文件"
+            echo "package_lock_exists=false" >> $GITHUB_ENV
+            echo "未找到 package-lock.json 文件"
+            echo "项目目录内容:"
+            ls -la my-project
+            echo "npm 配置:"
+            npm config list
             exit 1
           fi
 
-      - name: 读取 pnpm-lock.yaml 并下载依赖
-        if: env.lock_file_exists == 'true'
+      - name: 安装依赖
+        run: |
+          cd my-project
+          
+          # 使用生成的 package-lock.json 安装依赖
+          echo "使用 package-lock.json 安装依赖..."
+          npm ci --verbose
+
+      - name: 读取 package-lock.json 并下载依赖
+        if: env.package_lock_exists == 'true'
         run: |
           # 安装 Python 依赖
-          pip install requests ruamel.yaml
+          pip install requests
 
           # 创建下载目录
           mkdir -p downloads
 
-          # 使用 Python 脚本解析 pnpm-lock.yaml 并下载依赖
+          # 使用 Python 脚本解析 package-lock.json 并下载依赖
           python << EOF
           import json
           import os
           import requests
           from urllib.parse import urlparse
-          from ruamel.yaml import YAML
 
-          # 读取 pnpm-lock.yaml
-          yaml = YAML()
-          with open('my-project/pnpm-lock.yaml', 'r') as f:
-              lock_data = yaml.load(f)
+          # 读取 package-lock.json
+          with open('my-project/package-lock.json', 'r') as f:
+              lock_data = json.load(f)
 
           # 存储所有下载链接
           download_links = []
 
-          # 从 pnpm-lock.yaml 提取下载链接
+          # 提取 dependencies 中的下载链接
+          if 'dependencies' in lock_data:
+              for dep_name, dep_info in lock_data['dependencies'].items():
+                  if 'resolved' in dep_info:
+                      resolved_url = dep_info['resolved']
+                      # 检查是否为 HTTP/HTTPS 链接
+                      if resolved_url.startswith('http'):
+                          download_links.append(resolved_url)
+
+          # 提取 packages 中的下载链接 (npm v5+)
           if 'packages' in lock_data:
               for package_path, package_info in lock_data['packages'].items():
-                  if package_path == '':  # 跳过根项目
-                      continue
                   if 'resolved' in package_info:
                       resolved_url = package_info['resolved']
                       # 检查是否为 HTTP/HTTPS 链接
@@ -163,17 +216,20 @@ jobs:
           EOF
 
       - name: 打包下载的依赖文件
-        if: env.lock_file_exists == 'true'
+        if: env.package_lock_exists == 'true'
         run: |
+          # 修正打包命令，确保在正确的目录下创建压缩文件
           tar -czvf dependencies.tar.gz -C downloads .
           echo "打包后的文件列表:"
           ls -la
 
       - name: 上传打包文件作为 artifact
-        if: env.lock_file_exists == 'true'
+        if: env.package_lock_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: dependencies
-          path: dependencies.tar.gz
-          if-no-files-found: error
+          path: dependencies.tar.gz  # 确保与打包步骤生成的文件路径一致
+          if-no-files-found: error  # 将警告改为错误，确保问题被捕获
           compression-level: 6
+          overwrite: false
+          include-hidden-files: false    
