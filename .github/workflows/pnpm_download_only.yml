@@ -1,77 +1,186 @@
-name: Setup Pnpm Node.js Project
+name: Node.js Dependency Downloader with Custom Lock File
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: "Enter Node.js version (e.g., 18.x)"
+        description: 'Node.js 版本'
         required: true
-        default: "18.x"
-      npm_version:
-        description: "Enter NPM version (e.g., 9.x)"
-        required: true
-        default: "9.x"
+        default: '18.x'
       pnpm_version:
-        description: "Enter PNPM version (e.g., 8.x)"
+        description: 'pnpm 版本'
         required: true
-        default: "8.x"
-      yarn_version:
-        description: "Enter Yarn version (e.g., 1.x or 3.x)"
-        required: true
-        default: "1.x"
+        default: '8.x'
       plugins:
-        description: "Enter the plugin names to install (separate by space)"
+        description: '要安装的插件列表（用逗号分隔）'
         required: true
+        default: 'express,react,react-dom'
+      pnpm_lock_content:
+        description: '完整的 pnpm-lock.yaml 内容'
+        required: true
+        default: |
+          # 在此粘贴完整的 pnpm-lock.yaml 内容
+          # ...
 
 jobs:
-  setup-project:
-    runs-on: ubuntu-22.04
+  download-dependencies:
+    runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repo
-      - name: Checkout code
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      # Step 2: Set up Node.js environment
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
 
-      # Step 3: Install NPM
-      - name: Install NPM
-        run: npm install -g npm@${{ github.event.inputs.npm_version }}
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ github.event.inputs.pnpm_version }}
 
-      # Step 4: Install PNPM
-      - name: Install PNPM
-        run: npm install -g pnpm@${{ github.event.inputs.pnpm_version }}
+      - name: 创建项目目录
+        run: mkdir -p my-project
 
-      # Step 5: Install Yarn
-      - name: Install Yarn
-        run: npm install -g yarn@${{ github.event.inputs.yarn_version }}
-
-      # Step 6: Create Project Directory & Initialize
-      - name: Create project directory and initialize
+      - name: 写入 pnpm-lock.yaml
+        working-directory: ./my-project
         run: |
-          mkdir my_project
-          cd my_project
-          npm init -y
+          echo '${{ github.event.inputs.pnpm_lock_content }}' > pnpm-lock.yaml
+          echo "成功写入 pnpm-lock.yaml"
+          cat pnpm-lock.yaml | head -n 20  # 显示前20行用于调试
 
-      # Step 7: Install user-specified plugins
-      - name: Install plugins
+      - name: 创建 package.json
+        working-directory: ./my-project
         run: |
-          cd my_project
-          pnpm install ${{ github.event.inputs.plugins }}
+          cat > package.json << EOF
+          {
+            "name": "my-project",
+            "version": "1.0.0",
+            "description": "",
+            "main": "index.js",
+            "scripts": {
+              "test": "echo \"Error: no test specified\" && exit 1"
+            },
+            "keywords": [],
+            "author": "",
+            "license": "ISC"
+          }
+          EOF
+          
+          # 添加插件到 package.json
+          IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
+          for plugin in "${PLUGINS[@]}"; do
+            echo "添加插件 $plugin 到 package.json"
+            pnpm pkg set devDependencies.$plugin="*"
+          done
+          
+          # 显示 package.json 内容
+          echo "package.json 内容:"
+          cat package.json
 
-      # Step 8: Package project for download
-      - name: Package the project
+      - name: 使用 pnpm 安装依赖
+        working-directory: ./my-project
         run: |
-          cd my_project
-          zip -r ../my_project.zip .
+          pnpm install --frozen-lockfile --offline
+          echo "依赖安装完成"
+          ls -la node_modules
 
-      # Step 9: Upload the artifact
-      - name: Upload artifact
+      - name: 检查 pnpm-lock.yaml 文件
+        id: check_file
+        working-directory: ./my-project
+        run: |
+          if [ -f "pnpm-lock.yaml" ]; then
+            echo "lock_file_exists=true" >> $GITHUB_ENV
+            echo "找到 pnpm-lock.yaml 文件"
+          else
+            echo "lock_file_exists=false" >> $GITHUB_ENV
+            echo "未找到 pnpm-lock.yaml 文件"
+            exit 1
+          fi
+
+      - name: 读取 pnpm-lock.yaml 并下载依赖
+        if: env.lock_file_exists == 'true'
+        run: |
+          # 安装 Python 依赖
+          pip install requests ruamel.yaml
+
+          # 创建下载目录
+          mkdir -p downloads
+
+          # 使用 Python 脚本解析 pnpm-lock.yaml 并下载依赖
+          python << EOF
+          import json
+          import os
+          import requests
+          from urllib.parse import urlparse
+          from ruamel.yaml import YAML
+
+          # 读取 pnpm-lock.yaml
+          yaml = YAML()
+          with open('my-project/pnpm-lock.yaml', 'r') as f:
+              lock_data = yaml.load(f)
+
+          # 存储所有下载链接
+          download_links = []
+
+          # 从 pnpm-lock.yaml 提取下载链接
+          if 'packages' in lock_data:
+              for package_path, package_info in lock_data['packages'].items():
+                  if package_path == '':  # 跳过根项目
+                      continue
+                  if 'resolved' in package_info:
+                      resolved_url = package_info['resolved']
+                      # 检查是否为 HTTP/HTTPS 链接
+                      if resolved_url.startswith('http'):
+                          download_links.append(resolved_url)
+
+          # 打印下载链接数量
+          print(f"找到 {len(download_links)} 个下载链接")
+          if not download_links:
+              print("警告: 未找到任何下载链接")
+
+          # 下载所有链接的包
+          for url in download_links:
+              try:
+                  # 解析 URL 获取文件名
+                  parsed_url = urlparse(url)
+                  filename = os.path.basename(parsed_url.path)
+                  if not filename:
+                      filename = f"package_{hash(url)}.tar.gz"
+                  
+                  # 下载文件
+                  print(f"下载: {url}")
+                  response = requests.get(url, stream=True)
+                  response.raise_for_status()
+                  
+                  # 保存文件
+                  with open(f"downloads/{filename}", 'wb') as f:
+                      for chunk in response.iter_content(chunk_size=8192):
+                          f.write(chunk)
+                  
+                  print(f"已下载: {filename}")
+              except Exception as e:
+                  print(f"下载失败: {url}, 错误: {str(e)}")
+
+          # 创建下载链接列表文件
+          with open('downloads/links.txt', 'w') as f:
+              for url in download_links:
+                  f.write(url + '\n')
+          EOF
+
+      - name: 打包下载的依赖文件
+        if: env.lock_file_exists == 'true'
+        run: |
+          tar -czvf dependencies.tar.gz -C downloads .
+          echo "打包后的文件列表:"
+          ls -la
+
+      - name: 上传打包文件作为 artifact
+        if: env.lock_file_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: my_project
-          path: my_project.zip
+          name: dependencies
+          path: dependencies.tar.gz
+          if-no-files-found: error
+          compression-level: 6
