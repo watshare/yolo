@@ -27,8 +27,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
-          # 禁用自动缓存，因为我们在子目录中工作
-          cache: 'false'
+          # 移除cache参数，避免自动缓存查找
       
       - name: 安装指定版本的npm
         run: npm install -g npm@${{ github.event.inputs.npm_version }}
