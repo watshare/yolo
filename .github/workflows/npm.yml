@@ -1,202 +1,114 @@
-name: Node.js Dependency Downloader
+name: Node.js Package Downloader and Bundler
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: 'Node.js 版本'
+        description: 'Node.js version (e.g., 18.x)'
         required: true
         default: '18.x'
       npm_version:
-        description: 'npm 版本'
+        description: 'NPM version (e.g., 9.0.0)'
         required: true
-        default: '9.x'  # 明确使用 9.x 版本，确保生成 package-lock.json
+        default: '9.0.0'
       plugins:
-        description: '要安装的插件列表（用逗号分隔）'
+        description: 'Comma separated list of plugin names (e.g., express,lodash)'
         required: true
-        default: 'express,react,react-dom'
+        default: 'express'
 
 jobs:
-  download-dependencies:
+  setup-and-download:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 设置 Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
-          cache: 'npm'
 
-      - name: 安装指定版本的 npm
+      - name: Upgrade NPM
         run: |
           npm install -g npm@${{ github.event.inputs.npm_version }}
-          npm --version
-
-      - name: 显示完整环境信息
+      
+      - name: Create New Project Directory
         run: |
-          echo "当前工作目录: $(pwd)"
-          echo "环境变量:"
-          env | sort
-          echo "Node 版本: $(node -v)"
-          echo "npm 版本: $(npm -v)"
-          echo "npm 配置:"
-          npm config list
-          echo "目录内容:"
-          ls -la
-
-      - name: 创建并初始化项目
-        run: |
-          mkdir -p my-project
-          cd my-project
-          
-          # 初始化项目并确保生成 package.json
+          mkdir node-project
+          cd node-project
           npm init -y
-          
-          # 创建 package.json 文件（如果不存在）
-          cat > package.json << EOF
-          {
-            "name": "my-project",
-            "version": "1.0.0",
-            "description": "",
-            "main": "index.js",
-            "scripts": {
-              "test": "echo \"Error: no test specified\" && exit 1"
-            },
-            "keywords": [],
-            "author": "",
-            "license": "ISC"
-          }
-          EOF
-          
-          # 添加插件到 package.json
-          IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
-          for plugin in "${PLUGINS[@]}"; do
-            echo "添加插件 $plugin 到 package.json"
-            npm pkg set devDependencies.$plugin="*"
-          done
-          
-          # 显示 package.json 内容用于调试
-          echo "package.json 内容:"
-          cat package.json
 
-      - name: 清除 npm 缓存并安装依赖
+      - name: Install Plugins
         run: |
-          cd my-project
-          
-          # 清除缓存
-          npm cache clean --force
-          
-          # 确保生成 package-lock.json
-          npm config set package-lock true
-          
-          # 使用 npm ci 安装依赖（保证生成 lock 文件）
-          npm ci --verbose
-          
-          # 显示安装后的目录内容
-          echo "安装后的项目目录内容:"
-          ls -la
-
-      - name: 检查 package-lock.json 文件
-        id: check_file
+          cd node-project
+          npm install ${{ github.event.inputs.plugins }}
+      
+      - name: Check if package-lock.json exists
+        id: check_lock
         run: |
-          if [ -f "my-project/package-lock.json" ]; then
-            echo "package_lock_exists=true" >> $GITHUB_ENV
-            echo "找到 package-lock.json 文件"
-            cat my-project/package-lock.json | head -n 50
+          if [ -f node-project/package-lock.json ]; then
+            echo "lock_file_exists=true" >> $GITHUB_OUTPUT
           else
-            echo "package_lock_exists=false" >> $GITHUB_ENV
-            echo "未找到 package-lock.json 文件"
-            echo "项目目录内容:"
-            ls -la my-project
-            echo "npm 配置:"
-            npm config list
-            exit 1  # 明确失败，便于调试
+            echo "lock_file_exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 读取 package-lock.json 并下载依赖
-        if: env.package_lock_exists == 'true'
+      - name: Read package-lock.json and Extract Download URLs
+        if: steps.check_lock.outputs.lock_file_exists == 'true'
         run: |
-          # 安装 Python 依赖
-          pip install requests
+          python3 <<EOF
+import json
+import os
 
-          # 创建下载目录
-          mkdir -p downloads
+lock_path = "node-project/package-lock.json"
+urls_set = set()
 
-          # 使用 Python 脚本解析 package-lock.json 并下载依赖
-          python << EOF
-          import json
-          import os
-          import requests
-          from urllib.parse import urlparse
+with open(lock_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
 
-          # 读取 package-lock.json
-          with open('my-project/package-lock.json', 'r') as f:
-              lock_data = json.load(f)
+def extract_urls(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "resolved" and isinstance(v, str) and v.startswith("http"):
+                urls_set.add(v)
+            else:
+                extract_urls(v)
+    elif isinstance(obj, list):
+        for i in obj:
+            extract_urls(i)
 
-          # 存储所有下载链接
-          download_links = []
+extract_urls(data)
 
-          # 提取 dependencies 中的下载链接
-          if 'dependencies' in lock_data:
-              for dep_name, dep_info in lock_data['dependencies'].items():
-                  if 'resolved' in dep_info:
-                      resolved_url = dep_info['resolved']
-                      # 检查是否为 HTTP/HTTPS 链接
-                      if resolved_url.startswith('http'):
-                          download_links.append(resolved_url)
+with open("download_urls.txt", "w") as f:
+    for url in urls_set:
+        f.write(url + "\n")
 
-          # 提取 packages 中的下载链接 (npm v5+)
-          if 'packages' in lock_data:
-              for package_path, package_info in lock_data['packages'].items():
-                  if 'resolved' in package_info:
-                      resolved_url = package_info['resolved']
-                      # 检查是否为 HTTP/HTTPS 链接
-                      if resolved_url.startswith('http'):
-                          download_links.append(resolved_url)
+print(f"Extracted {len(urls_set)} URLs to download_urls.txt")
+EOF
 
-          # 下载所有链接的包
-          for url in download_links:
-              try:
-                  # 解析 URL 获取文件名
-                  parsed_url = urlparse(url)
-                  filename = os.path.basename(parsed_url.path)
-                  if not filename:
-                      filename = f"package_{hash(url)}.tar.gz"
-                  
-                  # 下载文件
-                  print(f"下载: {url}")
-                  response = requests.get(url, stream=True)
-                  response.raise_for_status()
-                  
-                  # 保存文件
-                  with open(f"downloads/{filename}", 'wb') as f:
-                      for chunk in response.iter_content(chunk_size=8192):
-                          f.write(chunk)
-                  
-                  print(f"已下载: {filename}")
-              except Exception as e:
-                  print(f"下载失败: {url}, 错误: {str(e)}")
-
-          # 创建下载链接列表文件
-          with open('downloads/links.txt', 'w') as f:
-              for url in download_links:
-                  f.write(url + '\n')
-          EOF
-
-      - name: 打包下载的依赖文件
-        if: env.package_lock_exists == 'true'
+      - name: Download All Packages
+        if: steps.check_lock.outputs.lock_file_exists == 'true'
         run: |
-          cd downloads
-          tar -czvf dependencies.tar.gz *
-          cd ..
-          mv downloads/dependencies.tar.gz .
+          mkdir -p downloaded_packages
+          while read url; do
+            fname=$(basename "$url")
+            wget -q "$url" -O "downloaded_packages/$fname"
+          done < download_urls.txt
 
-      - name: 上传打包文件作为 artifact
-        if: env.package_lock_exists == 'true'
+      - name: Compress Downloaded Packages
+        if: steps.check_lock.outputs.lock_file_exists == 'true'
+        run: |
+          zip -r node_packages.zip downloaded_packages
+
+      - name: Upload Package Zip as Artifact
+        if: steps.check_lock.outputs.lock_file_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: dependencies
-          path: dependencies.tar.gz    
+          name: node_packages
+          path: node_packages.zip
+
+      - name: Output Result
+        run: |
+          if [ "${{ steps.check_lock.outputs.lock_file_exists }}" == "true" ]; then
+            echo "package-lock.json found, all dependencies downloaded and bundled."
+          else
+            echo "package-lock.json not found, nothing to bundle."
