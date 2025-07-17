@@ -33,33 +33,63 @@ jobs:
       - name: 安装指定版本的 npm
         run: npm install -g npm@${{ github.event.inputs.npm_version }}
 
-      - name: 安装插件
+      - name: 显示环境信息
         run: |
+          echo "当前工作目录: $(pwd)"
+          node -v
+          npm -v
+          npm config get cache
+
+      - name: 创建项目目录
+        run: mkdir -p my-project
+
+      - name: 在项目目录中初始化 npm
+        working-directory: ./my-project
+        run: |
+          echo "当前工作目录: $(pwd)"
+          npm init -y
+
+      - name: 清除 npm 缓存
+        run: npm cache clean --force
+
+      - name: 配置 npm 生成 package-lock.json
+        working-directory: ./my-project
+        run: |
+          npm config set package-lock true
+          npm config list
+
+      - name: 安装插件
+        working-directory: ./my-project
+        run: |
+          echo "当前工作目录: $(pwd)"
           IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
           for plugin in "${PLUGINS[@]}"; do
             npm install --save-dev $plugin
           done
-
-      - name: 创建新项目
-        run: |
-          mkdir my-project
-          cd my-project
-          npm init -y
+          ls -la
 
       - name: 检查 package-lock.json 文件
         id: check_file
+        working-directory: ./my-project
         run: |
-          if [ -f "my-project/package-lock.json" ]; then
+          echo "当前工作目录: $(pwd)"
+          if [ -f "package-lock.json" ]; then
             echo "package_lock_exists=true" >> $GITHUB_ENV
             echo "找到 package-lock.json 文件"
+            cat package-lock.json | head -n 20
           else
             echo "package_lock_exists=false" >> $GITHUB_ENV
             echo "未找到 package-lock.json 文件"
+            echo "项目目录内容:"
+            ls -la
+            echo "npm 配置:"
+            npm config list
           fi
 
       - name: 读取 package-lock.json 并下载依赖
         if: env.package_lock_exists == 'true'
         run: |
+          echo "当前工作目录: $(pwd)"
           # 安装 Python 依赖
           pip install requests
 
