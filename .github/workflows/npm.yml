@@ -50,12 +50,22 @@ jobs:
       - name: Create package.json
         run: |
           npm init -y --force
+          echo "Generated package.json content:"
           cat package.json
       
-      - name: Install specified packages with lock file
+      - name: Force create package-lock.json
         run: |
-          echo "Installing packages: ${{ github.event.inputs.packages }}"
-          npm install ${{ github.event.inputs.packages }} --package-lock-only --force
+          # 确保 package-lock.json 被创建
+          echo "Creating package-lock.json..."
+          npm install --package-lock-only --force
+          
+          # 添加用户指定的包到 package.json
+          echo "Adding specified packages to package.json..."
+          npm install ${{ github.event.inputs.packages }} --save --package-lock-only
+          
+          echo "Updated package.json content:"
+          cat package.json
+          
           echo "Generated package-lock.json content:"
           cat package-lock.json
       
@@ -66,6 +76,8 @@ jobs:
             exit 1
           else
             echo "package-lock.json found successfully."
+            echo "package-lock.json content:"
+            cat package-lock.json
           fi
       
       - name: Upload package-lock.json
