@@ -1,170 +1,72 @@
-name: Download Node.js Dependencies
+name: 下载并打包NPM插件及依赖
 
 on:
   workflow_dispatch:
     inputs:
-      node_version:
-        description: 'Node.js 版本'
-        required: true
-        default: '18.x'
-      npm_version:
-        description: 'npm 版本'
-        required: true
-        default: '9.x'
+      node-version:
+        description: 'Node.js版本'
+        required: false
+        default: '20.x'
+      npm-version:
+        description: 'npm版本'
+        required: false
+        default: '10.x'
       packages:
-        description: '要安装的 npm 包（多个包用逗号分隔）'
+        description: '要下载的npm插件名，多个请用逗号分隔（如：express,lodash）'
         required: true
-        default: 'express,lodash'
 
 jobs:
-  download-dependencies:
+  download-and-archive:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Node.js
+      - name: 设置Node.js环境
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ github.event.inputs.node_version }}
-          cache: 'npm'
-      
-      - name: Show environment details
+          node-version: ${{ github.event.inputs.node-version }}
+
+      - name: 升级npm
+        run: npm install -g npm@${{ github.event.inputs.npm-version }}
+
+      - name: 创建package.json
         run: |
-          echo "Environment details"
-          node --version
-          npm --version
-          yarn --version
-          npm config get cache
-      
-      - name: Clean npm cache
-        run: npm cache clean --force
-      
-      - name: Install specified npm version
+          echo '{
+            "name": "temp-download",
+            "version": "1.0.0"
+          }' > package.json
+
+      - name: 安装指定插件
+        run: npm install ${{ github.event.inputs.packages }}
+
+      - name: 解析package-lock.json并下载所有包
         run: |
-          npm install -g npm@${{ github.event.inputs.npm_version }}
-          echo "Installed npm version:"
-          npm --version
-      
-      - name: Create package.json
+          python3 <<EOF
+import json, os, urllib.request
+with open('package-lock.json', 'r') as f:
+    lock = json.load(f)
+def download_pkg(dep, prefix=''):
+    info = lock['packages'].get(dep)
+    if info and 'resolved' in info:
+        url = info['resolved']
+        fname = dep.strip('node_modules/') + '-' + url.split('/')[-1]
+        fname = fname.replace('/', '_')
+        print(f'下载: {fname}')
+        try:
+            urllib.request.urlretrieve(url, f'pkgs/{fname}')
+        except Exception as e:
+            print(f'下载失败: {url} 错误: {e}')
+os.makedirs('pkgs', exist_ok=True)
+for dep in lock.get('packages', {}):
+    if dep == '':
+        continue
+    download_pkg(dep)
+EOF
+
+      - name: 打包所有下载的包
         run: |
-          npm init -y --force
-          echo "Generated package.json content:"
-          cat package.json
-      
-      - name: Force create package-lock.json
-        run: |
-          # 确保 package-lock.json 被创建
-          echo "Creating package-lock.json..."
-          npm install --package-lock-only --force
-          
-          # 添加用户指定的包到 package.json
-          echo "Adding specified packages to package.json..."
-          npm install ${{ github.event.inputs.packages }} --save --package-lock-only
-          
-          echo "Updated package.json content:"
-          cat package.json
-          
-          echo "Generated package-lock.json content:"
-          cat package-lock.json
-      
-      - name: Verify package-lock.json exists
-        run: |
-          if [ ! -f "package-lock.json" ]; then
-            echo "package-lock.json not found!"
-            exit 1
-          else
-            echo "package-lock.json found successfully."
-            echo "package-lock.json content:"
-            cat package-lock.json
-          fi
-      
-      - name: Upload package-lock.json
+          zip -r npm_packages.zip pkgs package-lock.json package.json
+
+      - name: 上传zip包
         uses: actions/upload-artifact@v4
         with:
-          name: package-lock
-          path: package-lock.json
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Download dependencies using Python
-        run: |
-          mkdir -p downloaded_packages
-          python - <<EOF
-          import json
-          import os
-          import requests
-          from urllib.parse import urlparse
-          
-          # 读取 package-lock.json
-          with open('package-lock.json', 'r') as f:
-              lock_data = json.load(f)
-          
-          # 创建下载目录
-          os.makedirs('downloaded_packages', exist_ok=True)
-          
-          # 下载所有依赖包
-          downloaded_files = []
-          
-          # 处理顶级依赖
-          for package_name, info in lock_data.get('packages', {}).items():
-              if not package_name:  # 跳过根包
-                  continue
-              
-              if 'resolved' in info:
-                  url = info['resolved']
-                  filename = os.path.basename(urlparse(url).path)
-                  
-                  try:
-                      print(f"Downloading {url}")
-                      response = requests.get(url, stream=True)
-                      response.raise_for_status()
-                      
-                      file_path = os.path.join('downloaded_packages', filename)
-                      with open(file_path, 'wb') as f:
-                          for chunk in response.iter_content(chunk_size=8192):
-                              f.write(chunk)
-                      
-                      downloaded_files.append(file_path)
-                      print(f"Downloaded {filename}")
-                  except Exception as e:
-                      print(f"Error downloading {url}: {e}")
-          
-          # 处理依赖树中的依赖
-          for package_name, info in lock_data.get('dependencies', {}).items():
-              if 'resolved' in info:
-                  url = info['resolved']
-                  filename = os.path.basename(urlparse(url).path)
-                  
-                  try:
-                      print(f"Downloading {url}")
-                      response = requests.get(url, stream=True)
-                      response.raise_for_status()
-                      
-                      file_path = os.path.join('downloaded_packages', filename)
-                      with open(file_path, 'wb') as f:
-                          for chunk in response.iter_content(chunk_size=8192):
-                              f.write(chunk)
-                      
-                      downloaded_files.append(file_path)
-                      print(f"Downloaded {filename}")
-                  except Exception as e:
-                      print(f"Error downloading {url}: {e}")
-          
-          print(f"Downloaded {len(downloaded_files)} packages")
-          EOF
-      
-      - name: Compress downloaded packages
-        run: |
-          tar -czvf node_modules_packages.tar.gz downloaded_packages
-      
-      - name: Upload compressed packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: node_modules_packages
-          path: node_modules_packages.tar.gz
-    
+          name: npm_packages_zip
+          path: npm_packages.zip
