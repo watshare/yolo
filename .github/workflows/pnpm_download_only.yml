@@ -6,11 +6,11 @@ on:
       node_version:
         description: 'Node.js 版本'
         required: true
-        default: '18.x'
+        default: '22.15.0'
       npm_version:
         description: 'npm 版本'
         required: true
-        default: '9.x'
+        default: '10.9.2'
       plugins:
         description: '要安装的插件列表（用逗号分隔）'
         required: true
