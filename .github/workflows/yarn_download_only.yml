@@ -1,77 +1,243 @@
-name: Setup yarn Node.js Project
+name: Node.js Dependency Downloader
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: "Enter Node.js version (e.g., 18.x)"
+        description: 'Node.js 版本'
         required: true
-        default: "18.x"
+        default: '22.15.0'
       npm_version:
-        description: "Enter NPM version (e.g., 9.x)"
+        description: 'npm 版本'
         required: true
-        default: "9.x"
-      pnpm_version:
-        description: "Enter PNPM version (e.g., 8.x)"
-        required: true
-        default: "8.x"
-      yarn_version:
-        description: "Enter Yarn version (e.g., 1.x or 3.x)"
-        required: true
-        default: "1.x"
+        default: '10.9.2'
       plugins:
-        description: "Enter the plugin names to install (separate by space)"
+        description: '要安装的插件列表（用逗号分隔）'
         required: true
+        default: 'express,react,react-dom'
 
 jobs:
-  setup-project:
-    runs-on: ubuntu-22.04
+  download-dependencies:
+    runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repo
-      - name: Checkout code
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      # Step 2: Set up Node.js environment
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: 设置 Node.js（无缓存）
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ github.event.inputs.node_version }}
+          # 移除 cache 参数，禁用缓存功能
 
-      # Step 3: Install NPM
-      - name: Install NPM
-        run: npm install -g npm@${{ github.event.inputs.npm_version }}
-
-      # Step 4: Install PNPM
-      - name: Install PNPM
-        run: npm install -g pnpm@${{ github.event.inputs.pnpm_version }}
-
-      # Step 5: Install Yarn
-      - name: Install Yarn
-        run: npm install -g yarn@${{ github.event.inputs.yarn_version }}
-
-      # Step 6: Create Project Directory & Initialize
-      - name: Create project directory and initialize
+      - name: 安装指定版本的 npm
         run: |
-          mkdir my_project
-          cd my_project
+          npm install -g npm@${{ github.event.inputs.npm_version }}
+          echo "安装的 npm 版本: $(npm --version)"
+
+      - name: 清除所有 npm 缓存
+        run: |
+          npm cache clean --force
+          rm -rf ~/.npm
+
+      - name: 显示完整环境信息
+        run: |
+          echo "当前工作目录: $(pwd)"
+          echo "Node 版本: $(node -v)"
+          echo "npm 版本: $(npm -v)"
+          echo "npm 缓存目录: $(npm config get cache)"
+          echo "npm 配置:"
+          npm config list
+          echo "目录内容:"
+          ls -la
+
+      - name: 创建并初始化项目
+        run: |
+          mkdir -p my-project
+          cd my-project
+          
+          # 初始化项目
           npm init -y
+          
+          # 添加插件到 package.json
+          IFS=',' read -ra PLUGINS <<< "${{ github.event.inputs.plugins }}"
+          for plugin in "${PLUGINS[@]}"; do
+            # 分割插件名称和版本
+            if [[ $plugin == *@* ]]; then
+              # 如果插件名称中包含@符号（可能是作用域或版本号）
+              # 检查是否是带版本号的格式，如 plugin@1.2.3 或 @scope/plugin@1.2.3
+              if [[ $plugin == @*@* ]]; then
+                # 处理带作用域和版本号的情况，如 @scope/plugin@1.2.3
+                scope_plugin="${plugin%@*}"  # 获取 @scope/plugin 部分
+                version="${plugin##*@}"     # 获取版本号部分
+              else
+                # 处理不带作用域但带版本号的情况，如 plugin@1.2.3
+                parts=(${plugin//@/ })     # 按@分割
+                name="${parts[0]}"
+                version="${parts[1]}"
+                scope_plugin="$name"
+              fi
+            else
+              # 不带版本号的情况
+              scope_plugin="$plugin"
+              version="*"
+            fi
+            
+            echo "添加插件 $scope_plugin 版本 $version 到 package.json"
+            npm pkg set devDependencies.$scope_plugin="$version"
+          done
+          
+          # 显示 package.json 内容
+          echo "package.json 内容:"
+          cat package.json
 
-      # Step 7: Install user-specified plugins
-      - name: Install plugins
+      - name: 强制生成 package-lock.json
         run: |
-          cd my_project
-          yarn install ${{ github.event.inputs.plugins }}
+          cd my-project
+          
+          # 配置 npm 强制生成 package-lock.json
+          npm config set package-lock true
+          npm config set lockfile-version 2
+          
+          # 使用 --no-fund 和 --no-audit 参数减少不必要的操作
+          # 使用 --ignore-scripts 参数避免执行包的安装脚本
+          # 使用 --force 参数强制重新解析所有依赖
+          echo "生成 package-lock.json..."
+          npm install --package-lock-only --verbose --no-fund --no-audit --ignore-scripts --force || true
+          
+          # 显示生成的 package-lock.json 头部内容
+          echo "package-lock.json 内容:"
+          cat package-lock.json | head -n 50
 
-      # Step 8: Package project for download
-      - name: Package the project
+      - name: 检查 package-lock.json 文件
+        id: check_file
         run: |
-          cd my_project
-          zip -r ../my_project.zip .
+          if [ -f "my-project/package-lock.json" ]; then
+            echo "package_lock_exists=true" >> $GITHUB_ENV
+            echo "找到 package-lock.json 文件"
+            
+            # 验证 package-lock.json 是否包含依赖项
+            DEPENDENCY_COUNT=$(jq -r '.dependencies | length' my-project/package-lock.json || echo 0)
+            echo "package-lock.json 中的依赖数量: $DEPENDENCY_COUNT"
+            
+            if [ "$DEPENDENCY_COUNT" -eq 0 ]; then
+              echo "错误: package-lock.json 不包含任何依赖项"
+              exit 1
+            fi
+          else
+            echo "package_lock_exists=false" >> $GITHUB_ENV
+            echo "未找到 package-lock.json 文件"
+            echo "项目目录内容:"
+            ls -la my-project
+            echo "npm 配置:"
+            npm config list
+            exit 1
+          fi
 
-      # Step 9: Upload the artifact
-      - name: Upload artifact
+      - name: 安装依赖
+        run: |
+          cd my-project
+          
+          # 使用生成的 package-lock.json 安装依赖，允许失败并继续
+          echo "使用 package-lock.json 安装依赖..."
+          npm ci --verbose --no-fund --no-audit --ignore-scripts --force || true
+
+      - name: 读取 package-lock.json 并下载依赖
+        if: env.package_lock_exists == 'true'
+        run: |
+          # 安装 Python 依赖
+          pip install requests
+
+          # 创建下载目录
+          mkdir -p downloads
+
+          # 使用 Python 脚本解析 package-lock.json 并下载依赖
+          python << EOF
+          import json
+          import os
+          import requests
+          from urllib.parse import urlparse
+
+          # 读取 package-lock.json
+          with open('my-project/package-lock.json', 'r') as f:
+              lock_data = json.load(f)
+
+          # 存储所有下载链接
+          download_links = []
+
+          # 提取 dependencies 中的下载链接
+          if 'dependencies' in lock_data:
+              for dep_name, dep_info in lock_data['dependencies'].items():
+                  if 'resolved' in dep_info:
+                      resolved_url = dep_info['resolved']
+                      # 检查是否为 HTTP/HTTPS 链接
+                      if resolved_url.startswith('http'):
+                          download_links.append(resolved_url)
+
+          # 提取 packages 中的下载链接 (npm v5+)
+          if 'packages' in lock_data:
+              for package_path, package_info in lock_data['packages'].items():
+                  if 'resolved' in package_info:
+                      resolved_url = package_info['resolved']
+                      # 检查是否为 HTTP/HTTPS 链接
+                      if resolved_url.startswith('http'):
+                          download_links.append(resolved_url)
+
+          # 打印下载链接数量
+          print(f"找到 {len(download_links)} 个下载链接")
+          if not download_links:
+              print("警告: 未找到任何下载链接")
+
+          # 下载所有链接的包
+          for url in download_links:
+              try:
+                  # 解析 URL 获取文件名
+                  parsed_url = urlparse(url)
+                  filename = os.path.basename(parsed_url.path)
+                  if not filename:
+                      filename = f"package_{hash(url)}.tar.gz"
+                  
+                  # 检查文件是否已存在
+                  if os.path.exists(f"downloads/{filename}"):
+                      print(f"跳过已下载的文件: {filename}")
+                      continue
+                  
+                  # 下载文件
+                  print(f"下载: {url}")
+                  response = requests.get(url, stream=True, timeout=30)
+                  response.raise_for_status()
+                  
+                  # 保存文件
+                  with open(f"downloads/{filename}", 'wb') as f:
+                      for chunk in response.iter_content(chunk_size=8192):
+                          f.write(chunk)
+                  
+                  print(f"已下载: {filename}")
+              except Exception as e:
+                  print(f"下载失败: {url}, 错误: {str(e)}")
+                  continue  # 跳过当前依赖继续下一个
+
+          # 创建下载链接列表文件
+          with open('downloads/links.txt', 'w') as f:
+              for url in download_links:
+                  f.write(url + '\n')
+          EOF
+
+      - name: 打包下载的依赖文件
+        if: env.package_lock_exists == 'true'
+        run: |
+          # 修正打包命令，确保在正确的目录下创建压缩文件
+          tar -czvf dependencies.tar.gz -C downloads .
+          echo "打包后的文件列表:"
+          ls -la
+
+      - name: 上传打包文件作为 artifact
+        if: env.package_lock_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: my_project
-          path: my_project.zip
+          name: dependencies
+          path: dependencies.tar.gz  # 确保与打包步骤生成的文件路径一致
+          if-no-files-found: error  # 将警告改为错误，确保问题被捕获
+          compression-level: 6
+          overwrite: false
+          include-hidden-files: false  
